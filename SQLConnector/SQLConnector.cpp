@@ -16,7 +16,7 @@ SQLINTEGER nativeError;
 SQLSMALLINT charCount;
 HWND desktopHandle = GetDesktopWindow();
 
-wchar_t *widebuf, *returnbuf;
+wchar_t *widebuf, *returnbuf, *row;
 bool keepRunning = true;
 
 void freeEverything(int conNull, int envNull, int stmtNull) {
@@ -49,7 +49,7 @@ int main(int argc, char **argv) {
 
 	//establish a connection
 	SQLRETURN retcode;
-	retcode = SQLDriverConnect(sqlConnectionHandle, desktopHandle, (SQLWCHAR*)L"DRIVER={SQL Server};SERVER=127.0.0.1, 1433;DATABASE=TIREESTD;UID=user;PWD=password", SQL_NTS, connectionString, 2048, NULL, SQL_DRIVER_PROMPT);
+	retcode = SQLDriverConnect(sqlConnectionHandle, desktopHandle, (SQLWCHAR*)L"DRIVER={SQL Server};SERVER=127.0.0.1, 1433;DATABASE=DB;UID=user;PWD=pw", SQL_NTS, connectionString, 2048, NULL, SQL_DRIVER_PROMPT);
 	if (retcode != SQL_SUCCESS && retcode != SQL_SUCCESS_WITH_INFO) {
 		puts("Connection failed");
 		freeEverything(1, 0, 1);
@@ -89,8 +89,18 @@ int main(int argc, char **argv) {
 					while (SQLFetch(sqlStatementHandle) == SQL_SUCCESS) {
 						returnbuf = (wchar_t*)malloc(sizeof(wchar_t) * BUFSIZE);
 
-						SQLGetData(sqlStatementHandle, 1, SQL_WCHAR, returnbuf, BUFSIZE, NULL);
-						wprintf(L"%ls\n", returnbuf);
+						int i = 1;
+						int prevcode;
+						retcode = (SQLGetData(sqlStatementHandle, i, SQL_WCHAR, returnbuf, BUFSIZE, NULL));
+						while (retcode == SQL_SUCCESS || retcode == SQL_SUCCESS_WITH_INFO || retcode == SQL_NULL_DATA) {
+							prevcode = retcode;
+							wprintf(L"%ls | ", retcode != SQL_NULL_DATA ? returnbuf : L"NULL");
+							i++;
+							retcode = (SQLGetData(sqlStatementHandle, i, SQL_WCHAR, returnbuf, BUFSIZE, NULL));
+							printf("---%d---\n", retcode);
+							if (prevcode == -1 && retcode == 100) break;
+						}
+						putc('\n', stdout);
 
 						free(returnbuf);
 					}
