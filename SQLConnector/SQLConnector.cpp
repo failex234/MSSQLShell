@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "getopt.h"
 #include <windows.h>
 #include <sqlext.h>
 #include <sqltypes.h>
@@ -6,13 +7,22 @@
 #include <sql.h>
 #include <string.h>
 #include <string>
+#include <algorithm>
 #include <vector>
 #include <iostream>
 #include <wchar.h>
+#include <ctime>
 #include <iomanip>
+#include <ShlObj.h>
 
 
 #define BUFSIZE 2048
+#define NAME "MSSQLShell"
+#define DESCRIPTION NAME " is a simple to use command line for your Microsoft SQL Server."
+#define AUTHOR "Felix Naumann"
+#define VERSION "0.9.5"
+#define REPO "https://github.com/failex234/MSSQLShell"
+#define URL "https://felixnaumann.me"
 
 using namespace std;
 
@@ -23,8 +33,25 @@ SQLINTEGER nativeError;
 SQLSMALLINT charCount;
 HWND desktopHandle = GetDesktopWindow();
 
+wstring wideconnString;
+
 wchar_t *widebuf, *returnbuf, *row;
+
+char user[64] = { 0 };
+char password[128] = { 0 };
+char server[128] = { 0 };
+char port[6] = { 0 };
+char database[32] = { 0 };
+char connString[422];
+
+char *cmdlinename;
+
 bool keepRunning = true;
+bool clionly = false;
+bool logging = false;
+bool promptpassword = false;
+
+FILE *logfile;
 
 class TableRow {
 private:
@@ -79,11 +106,54 @@ public:
 vector<TableRow> table;
 vector<int> maxcharspercol;
 
+void log(char *message) {
+	if (logging) {
+		logfile = fopen("log.txt", "a");
+
+		if (logfile == NULL) {
+			fprintf(stderr, "Error opening log file\n");
+			return;
+		}
+
+		//Get current time
+		std::time_t t = std::time(0);
+		std::tm* now = std::localtime(&t);
+
+		//dd-MM-YYY 24h masterrace
+		fprintf(logfile, "[%02d/%02d/%d %02d:%02d:%02d] %s\n", now->tm_mday, now->tm_mon + 1, now->tm_year + 1900, now->tm_hour, now->tm_min, now->tm_sec, message);
+
+		fflush(logfile);
+		fclose(logfile);
+	}
+}
+
+void checkForMissingArgs() {
+	if (strlen(user) == 0) {
+		fprintf(stderr, "A username is missing. Please specify one with -u\n");
+		exit(1);
+	}
+	if (strlen(password) == 0) {
+		promptpassword = true;
+	}
+	if (strlen(server) == 0) {
+		fprintf(stderr, "No server was specified. Please specify one with -s\n");
+		exit(1);
+	}
+	if (strlen(database) == 0) {
+		fprintf(stderr, "No database was specified. Please specify one with -d\n");
+		exit(1);
+	}
+	if (strlen(port) == 0) {
+		strcpy(port, "1433");
+	}
+}
+
 void freeEverything(int conNull, int envNull, int stmtNull) {
 	if (conNull != 1) SQLDisconnect(sqlConnectionHandle);
 	if (envNull != 1) SQLFreeHandle(SQL_HANDLE_ENV, sqlEnvironmentHandle);
 	if (conNull != 1) SQLFreeHandle(SQL_HANDLE_DBC, sqlConnectionHandle);
 	if (stmtNull != 1) SQLFreeHandle(SQL_HANDLE_STMT, sqlStatementHandle);
+	//TODO Check if widebuf actually contains something!!!
 	free(widebuf);
 }
 
@@ -107,7 +177,6 @@ wstring getFillingSpaces(int count) {
 	return spaces;
 }
 
-//This is the console clear example from microsoft
 void cls(HANDLE hConsole)
 {
 	COORD coordScreen = { 0, 0 };    // top-left position
@@ -159,35 +228,121 @@ void cls(HANDLE hConsole)
 }
 
 int main(int argc, char **argv) {
-	widebuf = (wchar_t*) calloc(sizeof(wchar_t), 1);
-	//First allocate a environment handle
-	if (SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &sqlEnvironmentHandle) != SQL_SUCCESS) {
-		puts("unable to allocate environment handle");
-		return 1;
+	cmdlinename = argv[0];
+	int opt;
+	
+	//argument checking
+	while ((opt = getopt(argc, argv, "clhvu:p:s:P:d:")) != -1) {
+		switch (opt)
+		{
+		case 'c':
+			clionly = true;
+			break;
+		case 'l':
+			logging = true;
+			break;
+		case 'h':
+			cout << NAME << " help menu" << endl;
+			cout << DESCRIPTION << endl;
+			cout << "usage: " << cmdlinename << " [args]" << endl << endl;
+			cout << "arguments:" << endl << "-c\t\t- enable complete CLI mode. Don't show the connection GUI" << endl;
+			cout << "-u\t\t- set user id (required for cli)" << endl;
+			cout << "-p\t\t- set user password" << endl;
+			cout << "-P\t\t- server port (1433 is standard port)" << endl;
+			cout << "-s\t\t- the server to connect to (required for cli)" << endl;
+			cout << "-d\t\t- the database to use (required for cli)" << endl;
+			cout << "-l\t\t- enable logging" << endl;
+			cout << "-h\t\t- show this help menu" << endl;
+			cout << "-v\t\t- show version information and general information about this program" << endl;
+			return 0;
+		case 'v':
+			cout << NAME << " " << VERSION << endl;
+			cout << DESCRIPTION << endl;
+			cout << "Git-Repository: " << REPO << endl;
+			return 0;
+		case 'u':
+			strcpy(user, optarg);
+			break;
+		case 'p':
+			strcpy(password, optarg);
+			break;
+		case 's':
+			strcpy(server, optarg);
+			break;
+		case 'P':
+			strcpy(port, optarg);
+			break;
+		case 'd':
+			strcpy(database, optarg);
+			break;
+		default:
+			fprintf(stderr, "Usage: %s [-clhvupsPd] [arguments...]", argv[0]);
+			return 1;
+		}
+	}
+	if (clionly) {
+		checkForMissingArgs();
+		if (promptpassword) {
+			printf("Password: ");
+			scanf("%s", &password);
+			getc(stdin);
+		}
+
 	}
 
-	//Set the environment attributes for the connection
-	if (SQLSetEnvAttr(sqlEnvironmentHandle, SQL_ATTR_ODBC_VERSION, (SQLPOINTER) SQL_OV_ODBC3, 0) != SQL_SUCCESS) {
-		puts("unable to set environment attributes");
-		return 1;
+	//Check if no port was given
+	if (!strcmp(port, "")) {
+		strcpy(port, "1433");
 	}
 
-	//allocate a connection handle
-	if (SQLAllocHandle(SQL_HANDLE_DBC, sqlEnvironmentHandle, &sqlConnectionHandle) != SQL_SUCCESS) {
-		puts("unable to allocate connection handle");
-		return 1;
-	}
+	//Put all parameters into the connection string and then convert it to a wide string for the microsoft sql driver
+	snprintf(connString, sizeof(connString), "DRIVER={SQL Server};SERVER=%s, %s;DATABASE=%s;UID=%s;PWD=%s", server, port, database, user, password);
+	string tempstr = string(connString);
+	wideconnString.assign(tempstr.begin(), tempstr.end());
 
-	//establish a connection
-	SQLRETURN retcode;
-	retcode = SQLDriverConnect(sqlConnectionHandle, desktopHandle, (SQLWCHAR*)L"DRIVER={SQL Server};SERVER=127.0.0.1, 1433;DATABASE=db;UID=user;PWD=pw", SQL_NTS, connectionString, 2048, NULL, SQL_DRIVER_PROMPT);
-	if (retcode != SQL_SUCCESS && retcode != SQL_SUCCESS_WITH_INFO) {
-		puts("Connection failed");
-		freeEverything(1, 0, 1);
-		puts("Press any key to exit...");
-		getc(stdin);
-		return 1;
-	}
+		widebuf = (wchar_t*)calloc(sizeof(wchar_t), 1);
+		//First allocate a environment handle
+		if (SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &sqlEnvironmentHandle) != SQL_SUCCESS) {
+			log("(PRE-CONNECTION) Can't allocate environment handle");
+			return 1;
+		}
+
+		//Set the environment attributes for the connection
+		if (SQLSetEnvAttr(sqlEnvironmentHandle, SQL_ATTR_ODBC_VERSION, (SQLPOINTER)SQL_OV_ODBC3, 0) != SQL_SUCCESS) {
+			log("(PRE-CONNECTION) Can't set SQL environment attributes");
+			return 1;
+		}
+
+		//allocate a connection handle
+		if (SQLAllocHandle(SQL_HANDLE_DBC, sqlEnvironmentHandle, &sqlConnectionHandle) != SQL_SUCCESS) {
+			log("(PRE-CONNECTION) Can't allocate SQL connection handle");
+			return 1;
+		}
+
+		//establish a connection
+		SQLRETURN retcode;
+		retcode = SQLDriverConnect(sqlConnectionHandle, desktopHandle, (SQLWCHAR*)&wideconnString[0], SQL_NTS, connectionString, 2048, NULL, (clionly == false ? SQL_DRIVER_PROMPT : SQL_DRIVER_NOPROMPT));
+		if (retcode != SQL_SUCCESS && retcode != SQL_SUCCESS_WITH_INFO) {
+			puts("Connection failed!");
+
+			//Get error
+			SQLGetDiagRec(SQL_HANDLE_DBC, sqlConnectionHandle, 1, stateMsg, &nativeError, errorMsg, 2048, &charCount);
+			if (wcslen(errorMsg) > 1 && wcslen(stateMsg) > 1) {
+				wprintf(L"%ls (%ls)\n", errorMsg, stateMsg);
+
+				char logmsg[2048] = "Connection failed with error \"\"";
+				log(logmsg);
+			}
+			else {
+				log("Connection failed with error \"User aborted connection\"");
+			}
+
+			freeEverything(1, 0, 1);
+			puts("Press any key to exit...");
+			getc(stdin);
+			return 1;
+		}
+		log("Connection established");
 		puts("Connection successfully established!");
 		handlestdout = GetStdHandle(STD_OUTPUT_HANDLE);
 
@@ -214,6 +369,8 @@ int main(int argc, char **argv) {
 				cls(handlestdout);
 			}
 			else {
+				log("Run statement");
+
 				retcode = SQLExecDirect(sqlStatementHandle, (SQLWCHAR*)widebuf, SQL_NTS);
 				//Query not successful. Output error message and number
 				if (retcode != SQL_SUCCESS && retcode != SQL_SUCCESS_WITH_INFO) {
@@ -233,7 +390,7 @@ int main(int argc, char **argv) {
 						while (retcode == SQL_SUCCESS || retcode == SQL_SUCCESS_WITH_INFO || retcode == SQL_NULL_DATA) {
 							//Save the previous return code to know when no more columns are coming
 							prevcode = retcode;
-							row.append((retcode != SQL_NULL_DATA ? returnbuf : L"NULL"));
+							row.append((retcode != SQL_NULL_DATA ? returnbuf : L"    "));
 							i++;
 							retcode = (SQLGetData(sqlStatementHandle, i, SQL_WCHAR, returnbuf, BUFSIZE, NULL));
 							if (prevcode == retcode && retcode == -1) break;
@@ -311,6 +468,7 @@ int main(int argc, char **argv) {
 		}
 		//free all handles and pointers
 		freeEverything(0, 0, 0);
+		log("Disconnected from database");
 
 		return 0;
-}
+	}
